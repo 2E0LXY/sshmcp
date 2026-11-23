@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +36,7 @@ func testEnv(t *testing.T) (*authServer, *admin, *http.ServeMux) {
 	h, _ := bcrypt.GenerateFromPassword([]byte("correct horse battery"), bcrypt.MinCost)
 	_ = setSetting(db, "pw_hash", string(h))
 	_ = setSetting(db, "totp_secret", "JBSWY3DPEHPK3PXP")
+	_ = setSetting(db, "admin_user", "admin")
 	a := newAuthServer(db, "https://mcp.test")
 	ad := newAdmin(db, a)
 	mux := http.NewServeMux()
@@ -97,7 +99,7 @@ func TestOAuthFlow(t *testing.T) {
 		}
 	}
 	post := func(pw, code string) *httptest.ResponseRecorder {
-		f := url.Values{"csrf": {csrf}, "client_id": {reg.ClientID}, "redirect_uri": {redirect}, "state": {"s1"}, "code_challenge": {challenge}, "password": {pw}, "totp": {code}}
+		f := url.Values{"csrf": {csrf}, "client_id": {reg.ClientID}, "redirect_uri": {redirect}, "state": {"s1"}, "code_challenge": {challenge}, "username": {"admin"}, "password": {pw}, "totp": {code}}
 		req := httptest.NewRequest("POST", "/authorize", strings.NewReader(f.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.AddCookie(&http.Cookie{Name: "csrf", Value: csrf})
@@ -289,5 +291,99 @@ func TestSSHExecAndPinning(t *testing.T) {
 	h3.HostKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(os.PublicKey())))
 	if _, err := h3.exec(context.Background(), "id", 10*time.Second); err == nil {
 		t.Fatal("host key mismatch accepted")
+	}
+}
+
+func TestCredsOK(t *testing.T) {
+	a, _, _ := testEnv(t)
+	code, _ := totp.GenerateCode("JBSWY3DPEHPK3PXP", time.Now())
+	if !a.credsOK("admin", "correct horse battery", code) {
+		t.Fatal("valid creds rejected")
+	}
+	if a.credsOK("other", "correct horse battery", code) || a.credsOK("admin", "bad", code) || a.credsOK("admin", "correct horse battery", "000000") {
+		t.Fatal("bad creds accepted")
+	}
+	_ = setSetting(a.db, "totp_secret", "") // TOTP optional
+	if !a.credsOK("admin", "correct horse battery", "") {
+		t.Fatal("no-TOTP login rejected")
+	}
+	if a.credsOK("admin", "wrong", "") || a.credsOK("nobody", "correct horse battery", "") {
+		t.Fatal("no-TOTP bad creds accepted")
+	}
+}
+
+func TestGlobalThrottle(t *testing.T) {
+	a, _, _ := testEnv(t)
+	for i := 0; i < 30; i++ {
+		a.recordFail(fmt.Sprintf("10.0.0.%d", i))
+	}
+	if !a.locked("203.0.113.9") {
+		t.Fatal("global throttle did not engage")
+	}
+}
+
+func TestAdminAccountFlow(t *testing.T) {
+	a, _, mux := testEnv(t)
+	_ = setSetting(a.db, "totp_secret", "")
+	_ = setSetting(a.db, "pw_temp", "1")
+	do := func(req *http.Request, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		return rr
+	}
+	form := func(path string, v url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", path, strings.NewReader(v.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return do(req, cookies...)
+	}
+	if r := form("/admin/login", url.Values{"username": {"admin"}, "password": {"nope"}}); r.Code != 401 {
+		t.Fatalf("bad login: %d", r.Code)
+	}
+	r := form("/admin/login", url.Values{"username": {"admin"}, "password": {"correct horse battery"}})
+	if r.Code != 303 {
+		t.Fatalf("login: %d %s", r.Code, r.Body)
+	}
+	var sess *http.Cookie
+	for _, c := range r.Result().Cookies() {
+		if c.Name == "sshmcp_sess" {
+			sess = c
+		}
+	}
+	d := do(httptest.NewRequest("GET", "/admin", nil), sess)
+	if d.Code != 200 || !strings.Contains(d.Body.String(), "Temporary password in use") {
+		t.Fatalf("dashboard: %d temp banner missing", d.Code)
+	}
+	csrf, _, _ := (&admin{db: a.db}).session(func() *http.Request { q := httptest.NewRequest("GET", "/", nil); q.AddCookie(sess); return q }())
+	// short password rejected, wrong current rejected, good change accepted
+	loc := func(rr *httptest.ResponseRecorder) string { return rr.Header().Get("Location") }
+	if l := loc(form("/admin/account/password", url.Values{"csrf": {csrf}, "current": {"correct horse battery"}, "new": {"short"}, "repeat": {"short"}}, sess)); !strings.Contains(l, "e=") {
+		t.Fatalf("short pw accepted: %s", l)
+	}
+	if l := loc(form("/admin/account/password", url.Values{"csrf": {csrf}, "current": {"wrong"}, "new": {"a much longer password"}, "repeat": {"a much longer password"}}, sess)); !strings.Contains(l, "e=") {
+		t.Fatalf("wrong current accepted: %s", l)
+	}
+	if l := loc(form("/admin/account/password", url.Values{"csrf": {csrf}, "current": {"correct horse battery"}, "new": {"a much longer password"}, "repeat": {"a much longer password"}}, sess)); !strings.Contains(l, "m=") {
+		t.Fatalf("change failed: %s", l)
+	}
+	if getSetting(a.db, "pw_temp") != "0" || !a.credsOK("admin", "a much longer password", "") || a.credsOK("admin", "correct horse battery", "") {
+		t.Fatal("password not changed correctly")
+	}
+	// CSRF required
+	if r := form("/admin/account/username", url.Values{"csrf": {"bad"}, "username": {"x1y2z3"}, "current": {"a much longer password"}}, sess); r.Code != 403 {
+		t.Fatalf("csrf not enforced: %d", r.Code)
+	}
+	// TOTP enable flow
+	form("/admin/account/totp/start", url.Values{"csrf": {csrf}}, sess)
+	sec := getSetting(a.db, "totp_pending")
+	code, _ := totp.GenerateCode(sec, time.Now())
+	form("/admin/account/totp/enable", url.Values{"csrf": {csrf}, "code": {code}}, sess)
+	if getSetting(a.db, "totp_secret") != sec {
+		t.Fatal("totp not enabled")
+	}
+	if a.credsOK("admin", "a much longer password", "") {
+		t.Fatal("login without code accepted after enabling TOTP")
 	}
 }

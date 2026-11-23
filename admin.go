@@ -95,6 +95,11 @@ func (ad *admin) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/hosts/delete", ad.guard(ad.hostDelete))
 	mux.HandleFunc("POST /admin/hosts/policy", ad.guard(ad.hostPolicy))
 	mux.HandleFunc("POST /admin/clients/revoke", ad.guard(ad.clientRevoke))
+	mux.HandleFunc("POST /admin/account/password", ad.guard(ad.accPassword))
+	mux.HandleFunc("POST /admin/account/username", ad.guard(ad.accUsername))
+	mux.HandleFunc("POST /admin/account/totp/start", ad.guard(ad.totpStart))
+	mux.HandleFunc("POST /admin/account/totp/enable", ad.guard(ad.totpEnable))
+	mux.HandleFunc("POST /admin/account/totp/disable", ad.guard(ad.totpDisable))
 }
 
 // ---- pages ----
@@ -118,8 +123,9 @@ input,select,textarea{width:100%}button{cursor:pointer}.row{display:grid;grid-te
 {{if eq .View "login"}}
 <div class="card" style="max-width:22rem"><h2>Sign in</h2>
 <form method="post" action="/admin/login" autocomplete="off">
-<label>Password<input type="password" name="password" required autofocus></label>
-<label>Authenticator code<input name="totp" inputmode="numeric" maxlength="6" required></label>
+<label>Username<input name="username" autocomplete="username" required autofocus></label>
+<label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+<label>Authenticator code <small>(only if enabled)</small><input name="totp" inputmode="numeric" maxlength="6"></label>
 <button>Sign in</button></form></div>
 
 {{else if eq .View "confirm"}}
@@ -131,6 +137,7 @@ input,select,textarea{width:100%}button{cursor:pointer}.row{display:grid;grid-te
 <button>Trust key, test login and save</button></form></div>
 
 {{else}}
+{{if .TempPW}}<p class="err"><b>Temporary password in use.</b> It was shared in chat. Change it under Account below now{{if not .TOTPOn}}, then enable an authenticator code{{end}}.</p>{{end}}
 <h2>Servers</h2>
 <table><tr><th>Name</th><th>Address</th><th>User</th><th>Auth</th><th>Policy</th><th></th></tr>
 {{range .Hosts}}<tr><td>{{.Name}}<br><small>{{.Note}}</small></td><td>{{.Addr}}:{{.Port}}</td><td>{{.User}}</td><td>{{.Auth}}</td>
@@ -160,6 +167,34 @@ input,select,textarea{width:100%}button{cursor:pointer}.row{display:grid;grid-te
 <label>Allowlist regexes (allowlist policy only, one per line)<textarea name="allow" rows="2"></textarea></label>
 <button>Fetch host key</button></form></div>
 
+<h2>Account</h2>
+<div class="card">
+<form method="post" action="/admin/account/password" autocomplete="off"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<b>Change password</b> (signed in as <code>{{.AdminUser}}</code>). Signs out other sessions and revokes connected AI clients, which then re-authorise.
+<div class="row"><label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
+<label>New password (12+ chars)<input type="password" name="new" autocomplete="new-password" minlength="12" required></label>
+<label>Repeat<input type="password" name="repeat" autocomplete="new-password" minlength="12" required></label></div>
+<button>Change password</button></form>
+<hr>
+<form method="post" action="/admin/account/username" autocomplete="off"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<b>Change username</b>
+<div class="row"><label>New username<input name="username" required pattern="[A-Za-z0-9._-]{3,32}"></label>
+<label>Current password<input type="password" name="current" required></label></div>
+<button>Change username</button></form>
+<hr>
+<b>Authenticator code (optional): {{if .TOTPOn}}<span class="ok">on</span>{{else}}off{{end}}</b>
+{{if .PendingSecret}}
+<p>Add this to your authenticator app, then enter a code to switch it on.<br>Secret: <code>{{.PendingSecret}}</code><br>URI: <code>{{.PendingURI}}</code></p>
+<form method="post" action="/admin/account/totp/enable"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Code<input name="code" inputmode="numeric" maxlength="6" required></label><button>Enable</button></form>
+{{else if .TOTPOn}}
+<form method="post" action="/admin/account/totp/disable"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Current password<input type="password" name="current" required></label><button class="danger">Disable</button></form>
+{{else}}
+<form method="post" action="/admin/account/totp/start"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>Set up</button></form>
+{{end}}
+</div>
+
 <h2>Connected AI clients</h2>
 <table><tr><th>Client</th><th>Registered</th><th></th></tr>
 {{range .Clients}}<tr><td>{{.Name}}<br><small>{{.ID}}</small></td><td>{{.Created}}</td>
@@ -175,6 +210,9 @@ input,select,textarea{width:100%}button{cursor:pointer}.row{display:grid;grid-te
 type clientRow struct{ ID, Name, Created string }
 type auditRow struct{ TS, Tool, Host, Detail, Result string }
 type pageData struct {
+	TempPW, TOTPOn                   bool
+	AdminUser, PendingSecret         string
+	PendingURI                       string
 	View, CSRF, Msg, Err, ID, Issuer string
 	Hosts                            []Host
 	Clients                          []clientRow
@@ -190,7 +228,13 @@ func (ad *admin) render(w http.ResponseWriter, code int, d pageData) {
 }
 
 func (ad *admin) dashboardData(csrf, msg, errMsg string) pageData {
-	d := pageData{View: "dash", CSRF: csrf, Msg: msg, Err: errMsg, Issuer: ad.auth.issuer}
+	d := pageData{View: "dash", CSRF: csrf, Msg: msg, Err: errMsg, Issuer: ad.auth.issuer,
+		TempPW: getSetting(ad.db, "pw_temp") == "1", TOTPOn: getSetting(ad.db, "totp_secret") != "",
+		AdminUser: getSetting(ad.db, "admin_user")}
+	if sec := getSetting(ad.db, "totp_pending"); sec != "" && !d.TOTPOn {
+		d.PendingSecret = sec
+		d.PendingURI = fmt.Sprintf("otpauth://totp/sshmcp:%s?secret=%s&issuer=sshmcp", d.AdminUser, sec)
+	}
 	d.Hosts, _ = listHosts(ad.db)
 	if rows, err := ad.db.Query(`SELECT id,name,created FROM oauth_clients ORDER BY created DESC LIMIT 50`); err == nil {
 		for rows.Next() {
@@ -245,9 +289,7 @@ func (ad *admin) login(w http.ResponseWriter, r *http.Request) {
 		ad.render(w, 429, pageData{View: "login", Err: "Too many attempts. Try again later."})
 		return
 	}
-	pwOK := bcrypt.CompareHashAndPassword([]byte(getSetting(ad.db, "pw_hash")), []byte(r.PostForm.Get("password"))) == nil
-	totpOK := totp.Validate(strings.TrimSpace(r.PostForm.Get("totp")), getSetting(ad.db, "totp_secret"))
-	if !pwOK || !totpOK {
+	if !ad.auth.credsOK(r.PostForm.Get("username"), r.PostForm.Get("password"), r.PostForm.Get("totp")) {
 		ad.auth.recordFail(ip)
 		audit(ad.db, "admin_login", "", ip, "failed", "")
 		ad.render(w, 401, pageData{View: "login", Err: "Invalid credentials."})
@@ -469,4 +511,101 @@ func (ad *admin) clientRevoke(w http.ResponseWriter, r *http.Request, _ string) 
 	_, _ = ad.db.Exec(`DELETE FROM oauth_clients WHERE id=?`, id)
 	audit(ad.db, "client_revoke", "", id, "ok", "admin")
 	back(w, r, "Client revoked", "")
+}
+
+// ---- account ----
+
+// verifyCurrent rate-limits and checks the current password for sensitive changes.
+func (ad *admin) verifyCurrent(r *http.Request) bool {
+	ip := clientIP(r)
+	if ad.auth.locked(ip) {
+		return false
+	}
+	ok := bcrypt.CompareHashAndPassword([]byte(getSetting(ad.db, "pw_hash")), []byte(r.PostForm.Get("current"))) == nil
+	if !ok {
+		ad.auth.recordFail(ip)
+		audit(ad.db, "account", "", ip, "current password wrong", "admin")
+	}
+	return ok
+}
+
+func (ad *admin) accPassword(w http.ResponseWriter, r *http.Request, sess string) {
+	if !ad.verifyCurrent(r) {
+		back(w, r, "", "Current password wrong (or too many attempts)")
+		return
+	}
+	nw := r.PostForm.Get("new")
+	switch {
+	case len(nw) < 12:
+		back(w, r, "", "New password must be at least 12 characters")
+		return
+	case len(nw) > 72:
+		back(w, r, "", "New password too long (max 72 bytes)")
+		return
+	case nw != r.PostForm.Get("repeat"):
+		back(w, r, "", "Passwords differ")
+		return
+	case nw == r.PostForm.Get("current"):
+		back(w, r, "", "New password must differ")
+		return
+	}
+	h, err := bcrypt.GenerateFromPassword([]byte(nw), 12)
+	if err != nil {
+		back(w, r, "", "Could not hash password")
+		return
+	}
+	_ = setSetting(ad.db, "pw_hash", string(h))
+	_ = setSetting(ad.db, "pw_temp", "0")
+	_, _ = ad.db.Exec(`DELETE FROM sessions WHERE hash<>?`, sess)
+	_, _ = ad.db.Exec(`DELETE FROM oauth_tokens`)
+	audit(ad.db, "account", "", "", "password changed; other sessions and AI clients revoked", "admin")
+	back(w, r, "Password changed. Other sessions and AI clients were signed out.", "")
+}
+
+func (ad *admin) accUsername(w http.ResponseWriter, r *http.Request, _ string) {
+	if !ad.verifyCurrent(r) {
+		back(w, r, "", "Current password wrong (or too many attempts)")
+		return
+	}
+	u := strings.TrimSpace(r.PostForm.Get("username"))
+	if !regexp.MustCompile(`^[A-Za-z0-9._-]{3,32}$`).MatchString(u) {
+		back(w, r, "", "Username: 3-32 letters, digits, . _ -")
+		return
+	}
+	_ = setSetting(ad.db, "admin_user", u)
+	audit(ad.db, "account", "", u, "username changed", "admin")
+	back(w, r, "Username changed", "")
+}
+
+func (ad *admin) totpStart(w http.ResponseWriter, r *http.Request, _ string) {
+	k, err := totp.Generate(totp.GenerateOpts{Issuer: "sshmcp", AccountName: getSetting(ad.db, "admin_user")})
+	if err != nil {
+		back(w, r, "", "Could not generate secret")
+		return
+	}
+	_ = setSetting(ad.db, "totp_pending", k.Secret())
+	back(w, r, "Scan or enter the secret, then confirm with a code", "")
+}
+
+func (ad *admin) totpEnable(w http.ResponseWriter, r *http.Request, _ string) {
+	sec := getSetting(ad.db, "totp_pending")
+	if sec == "" || !totp.Validate(strings.TrimSpace(r.PostForm.Get("code")), sec) {
+		back(w, r, "", "Code did not match; try again")
+		return
+	}
+	_ = setSetting(ad.db, "totp_secret", sec)
+	_ = setSetting(ad.db, "totp_pending", "")
+	audit(ad.db, "account", "", "", "TOTP enabled", "admin")
+	back(w, r, "Authenticator code enabled", "")
+}
+
+func (ad *admin) totpDisable(w http.ResponseWriter, r *http.Request, _ string) {
+	if !ad.verifyCurrent(r) {
+		back(w, r, "", "Current password wrong (or too many attempts)")
+		return
+	}
+	_ = setSetting(ad.db, "totp_secret", "")
+	_ = setSetting(ad.db, "totp_pending", "")
+	audit(ad.db, "account", "", "", "TOTP disabled", "admin")
+	back(w, r, "Authenticator code disabled", "")
 }

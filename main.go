@@ -31,7 +31,7 @@ func env(k, def string) string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: sshmcp serve | passwd | totp [--force] | version")
+		fmt.Fprintln(os.Stderr, "usage: sshmcp serve | passwd [--user NAME] [--temp] | totp [--force] | version")
 		os.Exit(2)
 	}
 	if os.Args[1] == "version" {
@@ -55,7 +55,7 @@ func main() {
 	case "serve":
 		serve(db)
 	case "passwd":
-		cmdPasswd(db)
+		cmdPasswd(db, os.Args[2:])
 	case "totp":
 		cmdTOTP(db, len(os.Args) > 2 && os.Args[2] == "--force")
 	default:
@@ -78,10 +78,25 @@ func readSecret(prompt string) string {
 	return strings.TrimRight(line, "\r\n")
 }
 
-func cmdPasswd(db *sql.DB) {
-	pw := readSecret("New admin password (min 14 chars): ")
-	if len(pw) < 14 {
-		log.Fatal("password too short")
+func cmdPasswd(db *sql.DB, args []string) {
+	user, temp := "", false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--user":
+			i++
+			if i < len(args) {
+				user = args[i]
+			}
+		case "--temp":
+			temp = true
+		}
+	}
+	pw := readSecret("New admin password (min 12 chars): ")
+	if !temp && len(pw) < 12 {
+		log.Fatal("password too short (use --temp to seed a short one, then change it in the dashboard)")
+	}
+	if len(pw) < 1 || len(pw) > 72 {
+		log.Fatal("password must be 1-72 bytes")
 	}
 	if term.IsTerminal(int(os.Stdin.Fd())) && readSecret("Repeat: ") != pw {
 		log.Fatal("passwords differ")
@@ -93,7 +108,17 @@ func cmdPasswd(db *sql.DB) {
 	if err := setSetting(db, "pw_hash", string(h)); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("password set")
+	if user != "" {
+		_ = setSetting(db, "admin_user", user)
+	} else if getSetting(db, "admin_user") == "" {
+		_ = setSetting(db, "admin_user", "admin")
+	}
+	if temp || len(pw) < 12 {
+		_ = setSetting(db, "pw_temp", "1")
+	} else {
+		_ = setSetting(db, "pw_temp", "0")
+	}
+	fmt.Println("password set for user", getSetting(db, "admin_user"))
 }
 
 func cmdTOTP(db *sql.DB, force bool) {

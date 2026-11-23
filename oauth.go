@@ -44,8 +44,26 @@ type authServer struct {
 	db     *sql.DB
 	issuer string
 
-	mu    sync.Mutex
-	fails map[string]*failState
+	mu          sync.Mutex
+	fails       map[string]*failState
+	global      []time.Time
+	globalUntil time.Time
+}
+
+// credsOK checks username, password and (when enabled) the TOTP code.
+// Every check runs, so timing does not reveal which part was wrong.
+func (a *authServer) credsOK(user, pw, code string) bool {
+	hash := getSetting(a.db, "pw_hash")
+	if hash == "" {
+		return false
+	}
+	uOK := subtle.ConstantTimeCompare([]byte(user), []byte(getSetting(a.db, "admin_user"))) == 1
+	pOK := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
+	tOK := true
+	if sec := getSetting(a.db, "totp_secret"); sec != "" {
+		tOK = totp.Validate(strings.TrimSpace(code), sec)
+	}
+	return uOK && pOK && tOK
 }
 
 type failState struct {
@@ -75,6 +93,9 @@ func clientIP(r *http.Request) string {
 func (a *authServer) locked(ip string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if time.Now().Before(a.globalUntil) {
+		return true
+	}
 	f := a.fails[ip]
 	return f != nil && time.Now().Before(f.until)
 }
@@ -82,6 +103,19 @@ func (a *authServer) locked(ip string) bool {
 func (a *authServer) recordFail(ip string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Global throttle: 30 failures in 10 minutes from anywhere pauses all logins for 10 minutes.
+	now := time.Now()
+	keep := a.global[:0]
+	for _, t := range a.global {
+		if now.Sub(t) < 10*time.Minute {
+			keep = append(keep, t)
+		}
+	}
+	a.global = append(keep, now)
+	if len(a.global) >= 30 {
+		a.globalUntil = now.Add(10 * time.Minute)
+		a.global = nil
+	}
 	f := a.fails[ip]
 	if f == nil {
 		f = &failState{}
@@ -211,8 +245,9 @@ input,button{width:100%;box-sizing:border-box;padding:.6rem;margin:.3rem 0 1rem;
 <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
 <input type="hidden" name="state" value="{{.State}}">
 <input type="hidden" name="code_challenge" value="{{.Challenge}}">
-<label>Password<input type="password" name="password" required autofocus></label>
-<label>Authenticator code<input name="totp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
+<label>Username<input name="username" autocomplete="username" required autofocus></label>
+<label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+<label>Authenticator code <small>(only if enabled)</small><input name="totp" inputmode="numeric" maxlength="6"></label>
 <button type="submit">Authorise</button></form></body></html>`))
 
 type loginData struct {
@@ -263,8 +298,8 @@ func (a *authServer) authorizeGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, 400)
 		return
 	}
-	if getSetting(a.db, "pw_hash") == "" || getSetting(a.db, "totp_secret") == "" {
-		http.Error(w, "server not configured (run: sshmcp passwd && sshmcp totp)", 503)
+	if getSetting(a.db, "pw_hash") == "" {
+		http.Error(w, "server not configured (run: sshmcp passwd)", 503)
 		return
 	}
 	csrf := randToken(18)
@@ -303,9 +338,7 @@ func (a *authServer) authorizePost(w http.ResponseWriter, r *http.Request) {
 		rerender(429, "Too many attempts. Try again later.")
 		return
 	}
-	pwOK := bcrypt.CompareHashAndPassword([]byte(getSetting(a.db, "pw_hash")), []byte(f.Get("password"))) == nil
-	totpOK := totp.Validate(strings.TrimSpace(f.Get("totp")), getSetting(a.db, "totp_secret"))
-	if !pwOK || !totpOK {
+	if !a.credsOK(f.Get("username"), f.Get("password"), f.Get("totp")) {
 		a.recordFail(ip)
 		audit(a.db, "login", "", ip, "failed", "")
 		rerender(401, "Invalid credentials.")
