@@ -1,0 +1,4 @@
+sshmcp
+*.db
+*.db-*
+master.key

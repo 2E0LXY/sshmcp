@@ -1,0 +1,36 @@
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+permissions:
+  contents: write
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Build static binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}-${GITHUB_SHA::7}" -o sshmcp .
+          sha256sum sshmcp > sshmcp.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sshmcp-linux-amd64
+          path: |
+            sshmcp
+            sshmcp.sha256
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sshmcp
+            sshmcp.sha256

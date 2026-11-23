@@ -1,0 +1,32 @@
+[Unit]
+Description=sshmcp SSH gateway for MCP clients
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sshmcp
+Group=sshmcp
+Environment=SSHMCP_DIR=/var/lib/sshmcp
+Environment=SSHMCP_ISSUER=https://mcp.2e0lxy.uk
+Environment=SSHMCP_ADDR=127.0.0.1:8765
+ExecStart=/opt/sshmcp/sshmcp serve
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/sshmcp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=200M
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
