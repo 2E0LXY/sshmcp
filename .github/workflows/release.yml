@@ -1,0 +1,39 @@
+name: release
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: v
+        run: |
+          V="$(tr -d '[:space:]' < VERSION)"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if gh release view "v$V" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-go@v5
+        if: steps.v.outputs.exists == 'false'
+        with:
+          go-version-file: go.mod
+      - name: Test
+        if: steps.v.outputs.exists == 'false'
+        run: go vet ./... && go test ./...
+      - name: Build
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ steps.v.outputs.version }}" -o sshmcp .
+          sha256sum sshmcp > sshmcp.sha256
+      - name: Create release (tag is created server-side)
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" sshmcp sshmcp.sha256 \
+            --target "$GITHUB_SHA" --generate-notes --prerelease
