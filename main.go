@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -167,9 +168,11 @@ func serve(db *sql.DB) {
 	}
 	addr := env("SSHMCP_ADDR", "127.0.0.1:8765")
 
-	srv := mcp.NewServer(&mcp.Implementation{Name: "sshmcp", Version: version}, nil)
-	registerTools(srv, db)
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{Stateless: true})
+	iu, err := url.Parse(issuer)
+	if err != nil || iu.Host == "" {
+		log.Fatal("bad SSHMCP_ISSUER")
+	}
+	mcpHandler := newMCPHandler(db, iu.Host)
 
 	a := newAuthServer(db, issuer)
 	ad := newAdmin(db, a)
@@ -205,4 +208,21 @@ func serve(db *sql.DB) {
 	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+// newMCPHandler builds the MCP endpoint. The SDK's localhost-only Host check would
+// reject the public hostname behind Caddy, so it is disabled and replaced by an
+// exact match on the configured issuer host.
+func newMCPHandler(db *sql.DB, host string) http.Handler {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "sshmcp", Version: version}, nil)
+	registerTools(srv, db)
+	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true, DisableLocalhostProtection: true})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != host {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }

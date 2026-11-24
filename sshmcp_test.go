@@ -402,3 +402,28 @@ func TestHostKeyAlgs(t *testing.T) {
 		t.Fatalf("rsa: %v", a)
 	}
 }
+
+func TestMCPHostHeader(t *testing.T) {
+	a, _, _ := testEnv(t)
+	srv := newMCPHandler(a.db, "mcp.test")
+	tok := "tok-test"
+	_, _ = a.db.Exec(`INSERT INTO oauth_tokens VALUES(?,?,?,?)`, hashToken(tok), "access", "c", time.Now().Add(time.Hour).Unix())
+	h := bearer(a.db, "https://mcp.test", srv)
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`
+	do := func(host string) int {
+		r := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
+		r.Host = host
+		r.Header.Set("Authorization", "Bearer "+tok)
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		return rr.Code
+	}
+	if c := do("mcp.test"); c != 200 {
+		t.Fatalf("public host rejected: %d", c)
+	}
+	if c := do("evil.example"); c != 403 {
+		t.Fatalf("foreign host accepted: %d", c)
+	}
+}
