@@ -151,14 +151,14 @@ input,select,textarea{width:100%}button{cursor:pointer}.row{display:grid;grid-te
 <td><form class="inline" method="post" action="/admin/hosts/delete" onsubmit="return confirm('Remove {{.Name}}?')"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="name" value="{{.Name}}"><button class="danger">Remove</button></form></td></tr>
 {{else}}<tr><td colspan="6">No servers yet.</td></tr>{{end}}</table>
 
-<div class="card"><h2>Add server</h2>
+<div class="card" id="add"><h2>Add server</h2>
 <form method="post" action="/admin/hosts/new" autocomplete="off">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <div class="row">
-<label>Name<input name="name" placeholder="web1" required pattern="[a-z0-9][a-z0-9._-]{0,39}"></label>
-<label>IP or hostname<input name="addr" required></label>
-<label>Port<input name="port" type="number" value="22" min="1" max="65535" required></label>
-<label>Username<input name="user" required></label></div>
+<label>Name<input name="name" value="{{.F.name}}" placeholder="web1" required pattern="[a-z0-9][a-z0-9._-]{0,39}"></label>
+<label>IP or hostname<input name="addr" value="{{.F.addr}}" required></label>
+<label>Port<input name="port" type="number" value="{{.F.port}}" min="1" max="65535" required></label>
+<label>Username<input name="user" value="{{.F.user}}" required></label></div>
 <div class="row">
 <label>Auth<select name="auth"><option value="password">Password</option><option value="key">Private key</option></select></label>
 <label>Policy<select name="policy"><option value="full">Full</option><option value="allowlist">Allowlist</option><option value="readonly">Read-only</option></select></label>
@@ -210,6 +210,7 @@ input,select,textarea{width:100%}button{cursor:pointer}.row{display:grid;grid-te
 type clientRow struct{ ID, Name, Created string }
 type auditRow struct{ TS, Tool, Host, Detail, Result string }
 type pageData struct {
+	F                                map[string]string
 	TempPW, TOTPOn                   bool
 	AdminUser, PendingSecret         string
 	PendingURI                       string
@@ -268,7 +269,12 @@ func (ad *admin) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	ad.render(w, 200, ad.dashboardData(csrf, q.Get("m"), q.Get("e")))
+	d := ad.dashboardData(csrf, q.Get("m"), q.Get("e"))
+	d.F = map[string]string{"name": q.Get("name"), "addr": q.Get("addr"), "port": q.Get("port"), "user": q.Get("user")}
+	if d.F["port"] == "" {
+		d.F["port"] = "22"
+	}
+	ad.render(w, 200, d)
 }
 
 func (ad *admin) login(w http.ResponseWriter, r *http.Request) {
