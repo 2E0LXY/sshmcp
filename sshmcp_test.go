@@ -47,8 +47,8 @@ func testEnv(t *testing.T) (*authServer, *admin, *http.ServeMux) {
 }
 
 func TestRedirectAllowlist(t *testing.T) {
-	ok := []string{"https://claude.ai/api/mcp/auth_callback", "https://chatgpt.com/connector_platform_oauth_redirect", "https://claude.com/api/mcp/auth_callback"}
-	bad := []string{"http://claude.ai/x", "https://evil.example/cb", "https://claude.ai.evil.com/cb", "https://user@claude.ai/cb", "javascript:alert(1)", "https://localhost/cb"}
+	ok := []string{"https://claude.ai/api/mcp/auth_callback", "https://chatgpt.com/connector_platform_oauth_redirect", "https://claude.com/api/mcp/auth_callback", "http://127.0.0.1:38213/callback", "http://localhost:1455/auth/callback", "http://[::1]:5000/cb"}
+	bad := []string{"http://claude.ai/x", "https://evil.example/cb", "https://claude.ai.evil.com/cb", "https://user@claude.ai/cb", "javascript:alert(1)", "https://localhost/cb", "http://evil.example/cb", "http://127.0.0.1.evil.com/cb", "http://claude.ai/x"}
 	for _, u := range ok {
 		if !redirectAllowed(u) {
 			t.Errorf("should allow %s", u)

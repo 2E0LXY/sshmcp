@@ -34,10 +34,15 @@ var allowedRedirectHosts = map[string]bool{
 
 func redirectAllowed(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Fragment != "" || u.User != nil {
+	if err != nil || u.Fragment != "" || u.User != nil {
 		return false
 	}
-	return allowedRedirectHosts[strings.ToLower(u.Hostname())]
+	h := strings.ToLower(u.Hostname())
+	// RFC 8252 loopback redirects for native clients (e.g. Codex CLI): http, IP literal or localhost, any port.
+	if u.Scheme == "http" {
+		return h == "127.0.0.1" || h == "::1" || h == "localhost"
+	}
+	return u.Scheme == "https" && allowedRedirectHosts[h]
 }
 
 type authServer struct {
