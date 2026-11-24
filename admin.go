@@ -95,6 +95,7 @@ func (ad *admin) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/hosts/delete", ad.guard(ad.hostDelete))
 	mux.HandleFunc("POST /admin/hosts/policy", ad.guard(ad.hostPolicy))
 	mux.HandleFunc("POST /admin/clients/revoke", ad.guard(ad.clientRevoke))
+	mux.HandleFunc("POST /admin/tokens/new", ad.guard(ad.tokenNew))
 	mux.HandleFunc("POST /admin/account/password", ad.guard(ad.accPassword))
 	mux.HandleFunc("POST /admin/account/username", ad.guard(ad.accUsername))
 	mux.HandleFunc("POST /admin/account/totp/start", ad.guard(ad.totpStart))
@@ -201,6 +202,12 @@ input,select,textarea{width:100%}button{cursor:pointer}.row{display:grid;grid-te
 <td><form class="inline" method="post" action="/admin/clients/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}"><button class="danger">Revoke</button></form></td></tr>
 {{else}}<tr><td colspan="3">None yet. Add <code>{{.Issuer}}/mcp</code> as a custom connector in Claude or ChatGPT.</td></tr>{{end}}</table>
 
+<h2>API tokens</h2>
+{{if .NewToken}}<div class="card"><b>Copy this token now. It is shown once.</b><br><code>{{.NewToken}}</code></div>{{end}}
+<form method="post" action="/admin/tokens/new"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Label<input name="label" placeholder="codex" maxlength="40" required pattern="[A-Za-z0-9 ._-]+"></label><button>Create token</button></form>
+<p><small>Use as <code>Authorization: Bearer TOKEN</code> on <code>{{.Issuer}}/mcp</code>. Listed above as "API token"; revoke there.</small></p>
+
 <h2>Audit log (latest 100)</h2>
 <table><tr><th>Time (UTC)</th><th>Tool</th><th>Host</th><th>Detail</th><th>Result</th></tr>
 {{range .Audit}}<tr><td>{{.TS}}</td><td>{{.Tool}}</td><td>{{.Host}}</td><td><code>{{.Detail}}</code></td><td>{{.Result}}</td></tr>{{end}}</table>
@@ -215,6 +222,7 @@ type pageData struct {
 	AdminUser, PendingSecret         string
 	PendingURI                       string
 	View, CSRF, Msg, Err, ID, Issuer string
+	NewToken                         string
 	Hosts                            []Host
 	Clients                          []clientRow
 	Audit                            []auditRow
@@ -518,6 +526,27 @@ func (ad *admin) clientRevoke(w http.ResponseWriter, r *http.Request, _ string) 
 	_, _ = ad.db.Exec(`DELETE FROM oauth_clients WHERE id=?`, id)
 	audit(ad.db, "client_revoke", "", id, "ok", "admin")
 	back(w, r, "Client revoked", "")
+}
+
+func (ad *admin) tokenNew(w http.ResponseWriter, r *http.Request, csrf string) {
+	label := strings.TrimSpace(r.PostForm.Get("label"))
+	if label == "" || len(label) > 40 || strings.Trim(label, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-") != "" {
+		back(w, r, "", "Label: letters, digits, space . _ - (max 40)")
+		return
+	}
+	id := randToken(16)
+	tok := "sshmcp_" + randToken(32)
+	_, e1 := ad.db.Exec(`INSERT INTO oauth_clients(id,name,redirect_uris,created) VALUES(?,?,?,?)`, id, "API token: "+label, "[]", time.Now().Unix())
+	_, e2 := ad.db.Exec(`INSERT INTO oauth_tokens(hash,kind,client_id,expires) VALUES(?,?,?,?)`, hashToken(tok), "access", id, int64(4102444800))
+	if e1 != nil || e2 != nil {
+		back(w, r, "", "Could not create token")
+		return
+	}
+	audit(ad.db, "token_new", "", label, "ok", "admin")
+	d := ad.dashboardData(csrf, "Token created", "")
+	d.NewToken = tok
+	w.Header().Set("Cache-Control", "no-store")
+	ad.render(w, 200, d)
 }
 
 // ---- account ----

@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -358,6 +359,32 @@ func TestAdminAccountFlow(t *testing.T) {
 		t.Fatalf("dashboard: %d temp banner missing", d.Code)
 	}
 	csrf, _, _ := (&admin{db: a.db}).session(func() *http.Request { q := httptest.NewRequest("GET", "/", nil); q.AddCookie(sess); return q }())
+	// API token: created once, accepted by bearer middleware, revocable
+	tr := form("/admin/tokens/new", url.Values{"csrf": {csrf}, "label": {"codex"}}, sess)
+	m := regexp.MustCompile(`sshmcp_[A-Za-z0-9_-]+`).FindString(tr.Body.String())
+	if tr.Code != 200 || m == "" {
+		t.Fatalf("token create: %d", tr.Code)
+	}
+	if bad := form("/admin/tokens/new", url.Values{"csrf": {csrf}, "label": {"a<b"}}, sess); bad.Code != 303 {
+		t.Fatalf("bad label accepted: %d", bad.Code)
+	}
+	bh := bearer(a.db, "https://x.example", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+	call := func(tok string) int {
+		q := httptest.NewRequest("POST", "/mcp", nil)
+		q.Header.Set("Authorization", "Bearer "+tok)
+		rr := httptest.NewRecorder()
+		bh.ServeHTTP(rr, q)
+		return rr.Code
+	}
+	if call(m) != 204 || call(m+"x") != 401 {
+		t.Fatal("api token not honoured correctly")
+	}
+	var cid string
+	_ = a.db.QueryRow(`SELECT id FROM oauth_clients WHERE name='API token: codex'`).Scan(&cid)
+	form("/admin/clients/revoke", url.Values{"csrf": {csrf}, "id": {cid}}, sess)
+	if call(m) != 401 {
+		t.Fatal("revoked token still valid")
+	}
 	// short password rejected, wrong current rejected, good change accepted
 	loc := func(rr *httptest.ResponseRecorder) string { return rr.Header().Get("Location") }
 	if l := loc(form("/admin/account/password", url.Values{"csrf": {csrf}, "current": {"correct horse battery"}, "new": {"short"}, "repeat": {"short"}}, sess)); !strings.Contains(l, "e=") {
