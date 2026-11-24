@@ -161,6 +161,26 @@ func bearer(db *sql.DB, issuer string, next http.Handler) http.Handler {
 	})
 }
 
+// secretPath serves /mcp/<token> for clients that can only take a URL (no headers, no OAuth).
+// The token is an API token created in the dashboard; unknown tokens get a bare 404.
+func secretPath(db *sql.DB, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := strings.TrimPrefix(r.URL.Path, "/mcp/")
+		tok = strings.TrimSuffix(tok, "/")
+		var clientID string
+		var exp int64
+		err := db.QueryRow(`SELECT client_id,expires FROM oauth_tokens WHERE hash=? AND kind='access'`, hashToken(tok)).Scan(&clientID, &exp)
+		if tok == "" || strings.Contains(tok, "/") || err != nil || time.Now().Unix() > exp {
+			http.NotFound(w, r)
+			return
+		}
+		r2 := r.Clone(context.WithValue(r.Context(), clientKey, clientID))
+		r2.URL.Path, r2.URL.RawPath = "/mcp", ""
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r2)
+	})
+}
+
 func serve(db *sql.DB) {
 	issuer := strings.TrimRight(env("SSHMCP_ISSUER", ""), "/")
 	if !strings.HasPrefix(issuer, "https://") {
@@ -180,6 +200,7 @@ func serve(db *sql.DB) {
 	a.routes(mux)
 	ad.routes(mux)
 	mux.Handle("/mcp", bearer(db, issuer, mcpHandler))
+	mux.Handle("/mcp/", secretPath(db, mcpHandler))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 
 	hs := &http.Server{

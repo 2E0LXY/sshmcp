@@ -379,10 +379,25 @@ func TestAdminAccountFlow(t *testing.T) {
 	if call(m) != 204 || call(m+"x") != 401 {
 		t.Fatal("api token not honoured correctly")
 	}
+	sp := secretPath(a.db, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" || r.Context().Value(clientKey) == nil {
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(204)
+	}))
+	surl := func(tok string) int {
+		rr := httptest.NewRecorder()
+		sp.ServeHTTP(rr, httptest.NewRequest("POST", "/mcp/"+tok, nil))
+		return rr.Code
+	}
+	if surl(m) != 204 || surl(m+"x") != 404 || surl("") != 404 || surl("a/b") != 404 {
+		t.Fatal("secret path not honoured correctly")
+	}
 	var cid string
 	_ = a.db.QueryRow(`SELECT id FROM oauth_clients WHERE name='API token: codex'`).Scan(&cid)
 	form("/admin/clients/revoke", url.Values{"csrf": {csrf}, "id": {cid}}, sess)
-	if call(m) != 401 {
+	if call(m) != 401 || surl(m) != 404 {
 		t.Fatal("revoked token still valid")
 	}
 	// short password rejected, wrong current rejected, good change accepted

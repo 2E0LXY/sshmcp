@@ -203,7 +203,7 @@ input,select,textarea{width:100%}button{cursor:pointer}.row{display:grid;grid-te
 {{else}}<tr><td colspan="3">None yet. Add <code>{{.Issuer}}/mcp</code> as a custom connector in Claude or ChatGPT.</td></tr>{{end}}</table>
 
 <h2>API tokens</h2>
-{{if .NewToken}}<div class="card"><b>Copy this token now. It is shown once.</b><br><code>{{.NewToken}}</code></div>{{end}}
+{{if .NewToken}}<div class="card"><b>Copy this token now. It is shown once.</b><br><code>{{.NewToken}}</code><br><br>Or, for clients that only accept a URL (no auth needed):<br><code>{{.Issuer}}/mcp/{{.NewToken}}</code></div>{{end}}
 <form method="post" action="/admin/tokens/new"><input type="hidden" name="csrf" value="{{.CSRF}}">
 <label>Label<input name="label" placeholder="codex" maxlength="40" required pattern="[A-Za-z0-9 ._-]+"></label><button>Create token</button></form>
 <p><small>Use as <code>Authorization: Bearer TOKEN</code> on <code>{{.Issuer}}/mcp</code>. Listed above as "API token"; revoke there.</small></p>
