@@ -353,7 +353,8 @@ func scanHostKey(ctx context.Context, addr string, port int) (ssh.PublicKey, err
 			got = k
 			return errors.New("captured")
 		},
-		Timeout: dialTimeout,
+		HostKeyAlgorithms: scanAlgs,
+		Timeout:           dialTimeout,
 	}
 	target := net.JoinHostPort(addr, strconv.Itoa(port))
 	d := net.Dialer{Timeout: dialTimeout}

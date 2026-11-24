@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -385,5 +386,19 @@ func TestAdminAccountFlow(t *testing.T) {
 	}
 	if a.credsOK("admin", "a much longer password", "") {
 		t.Fatal("login without code accepted after enabling TOTP")
+	}
+}
+
+func TestHostKeyAlgs(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	sg, _ := ssh.NewSignerFromKey(priv)
+	if a := hostKeyAlgs(sg.PublicKey()); len(a) != 1 || a[0] != ssh.KeyAlgoED25519 {
+		t.Fatalf("ed25519: %v", a)
+	}
+	rk, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rs, _ := ssh.NewSignerFromKey(rk)
+	a := hostKeyAlgs(rs.PublicKey())
+	if len(a) != 2 || a[0] != ssh.KeyAlgoRSASHA512 || a[1] != ssh.KeyAlgoRSASHA256 {
+		t.Fatalf("rsa: %v", a)
 	}
 }

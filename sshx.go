@@ -91,7 +91,7 @@ func (h *Host) dial(ctx context.Context) (*ssh.Client, error) {
 		User:              h.User,
 		Auth:              auth,
 		HostKeyCallback:   ssh.FixedHostKey(pinned),
-		HostKeyAlgorithms: []string{pinned.Type()},
+		HostKeyAlgorithms: hostKeyAlgs(pinned),
 		Timeout:           dialTimeout,
 	}
 	addr := net.JoinHostPort(h.Addr, fmt.Sprint(h.Port))
@@ -281,4 +281,19 @@ func readAllCapped(r io.Reader, n int64) ([]byte, bool, error) {
 		return b[:n], true, nil
 	}
 	return b, false, nil
+}
+
+// hostKeyAlgs maps a pinned key to the signature algorithms servers accept.
+// RSA host keys must be negotiated as rsa-sha2-*; plain ssh-rsa (SHA-1) is refused.
+func hostKeyAlgs(k ssh.PublicKey) []string {
+	if k.Type() == ssh.KeyAlgoRSA {
+		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
+	}
+	return []string{k.Type()}
+}
+
+// scanAlgs is the preference order used when first fetching a host key.
+var scanAlgs = []string{
+	ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521,
+	ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256,
 }
