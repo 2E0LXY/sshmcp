@@ -365,6 +365,9 @@ func TestAdminAccountFlow(t *testing.T) {
 	if tr.Code != 200 || m == "" {
 		t.Fatalf("token create: %d", tr.Code)
 	}
+	if !strings.Contains(tr.Body.String(), `name="csrf" value="`+csrf+`"`) {
+		t.Fatal("token page renders wrong csrf token")
+	}
 	if bad := form("/admin/tokens/new", url.Values{"csrf": {csrf}, "label": {"a<b"}}, sess); bad.Code != 303 {
 		t.Fatalf("bad label accepted: %d", bad.Code)
 	}

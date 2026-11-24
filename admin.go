@@ -528,7 +528,8 @@ func (ad *admin) clientRevoke(w http.ResponseWriter, r *http.Request, _ string) 
 	back(w, r, "Client revoked", "")
 }
 
-func (ad *admin) tokenNew(w http.ResponseWriter, r *http.Request, csrf string) {
+func (ad *admin) tokenNew(w http.ResponseWriter, r *http.Request, _ string) {
+	csrf, _, _ := ad.session(r)
 	label := strings.TrimSpace(r.PostForm.Get("label"))
 	if label == "" || len(label) > 40 || strings.Trim(label, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-") != "" {
 		back(w, r, "", "Label: letters, digits, space . _ - (max 40)")
