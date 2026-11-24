@@ -31,7 +31,7 @@ func env(k, def string) string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: sshmcp serve | passwd [--user NAME] [--temp] | totp [--force] | version")
+		fmt.Fprintln(os.Stderr, "usage: sshmcp serve | passwd [--user NAME] [--temp] | totp [--force] | addhost --name N --addr A --user U --fingerprint SHA256:.. [--port 22] [--policy full] [--note ..] (secret on stdin) | version")
 		os.Exit(2)
 	}
 	if os.Args[1] == "version" {
@@ -58,6 +58,8 @@ func main() {
 		cmdPasswd(db, os.Args[2:])
 	case "totp":
 		cmdTOTP(db, len(os.Args) > 2 && os.Args[2] == "--force")
+	case "addhost":
+		cmdAddHost(db, os.Args[2:])
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command")
 		os.Exit(2)
